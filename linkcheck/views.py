@@ -1,5 +1,5 @@
 import json
-from itertools import groupby
+from itertools import groupby, chain
 from operator import itemgetter
 
 import django
@@ -113,28 +113,37 @@ def report(request):
         innerkeyfunc = itemgetter('object_id')
         objects = []
         tg = sorted(tg, key=innerkeyfunc)
-        for ok, og in groupby(tg, innerkeyfunc):
-            content_type = ContentType.objects.get(pk=tk)
+        object_group_map = {ok: list(og) for ok, og in groupby(tg, innerkeyfunc)}
+        content_type = ContentType.objects.get(pk=tk)
+        objects_map = {}
+        try:
+            if content_type.model_class():
+                objects_map = content_type.model_class().objects.in_bulk(object_group_map.keys())
+        except ObjectDoesNotExist:
+            pass
+
+        links_map = Link.objects.select_related('url').in_bulk(x['id'] for x in chain(*object_group_map.values()))
+
+        for ok, og in object_group_map.items():
             og = list(og)
+            obj = objects_map.get(ok)
             try:
-                object = None
-                if content_type.model_class():
-                    object = content_type.model_class().objects.get(pk=ok)
-            except ObjectDoesNotExist:
-                pass
-            try:
-                admin_url = object.get_admin_url()  # TODO allow method name to be configurable
+                admin_url = obj.get_admin_url()  # TODO allow method name to be configurable
             except AttributeError:
                 try:
                     admin_url = reverse('admin:%s_%s_change' % (content_type.app_label, content_type.model), args=[ok])
                 except NoReverseMatch:
                     admin_url = None
 
+            link_list = [links_map[x['id']] for x in og]
+
             objects.append({
-                'object': object,
-                'link_list': Link.objects.in_bulk([x['id'] for x in og]).values(),  # Convert values_list back to queryset. Do we need to get values() or do we just need a list of ids?
+                'object': obj,
+                # Convert values_list back to queryset. Do we need to get values() or do we just need a list of ids?
+                'link_list': link_list,
                 'admin_url': admin_url,
             })
+
         content_types_list.append({
             'content_type': content_type,
             'object_list': objects
